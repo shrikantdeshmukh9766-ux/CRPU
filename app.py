@@ -1,4 +1,5 @@
 import io
+import time
 import requests
 import pandas as pd
 import streamlit as st
@@ -46,7 +47,7 @@ def load_roster(file):
     return roster, labels
 
 
-@st.cache_data(ttl=300, show_spinner="Fetching data from KoboToolbox…")
+@st.cache_data(ttl=60, show_spinner="Fetching data from KoboToolbox…")
 def fetch_kobo(server, uid, token):
     url = f"{server.rstrip('/')}/api/v2/assets/{uid}/data/"
     headers = {"Authorization": f"Token {token}"}
@@ -91,10 +92,13 @@ def build_report(roster, labels, subs):
     return out.rename(columns=Q_COLS)
 
 
-def to_excel(df):
+def to_excel(df, per_dept=False):
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as w:
         df.to_excel(w, index=False, sheet_name="Report")
+        if per_dept:
+            for name, g in df.groupby("Department"):
+                g.dropna(axis=1, how="all").to_excel(w, index=False, sheet_name=str(name)[:31])
         df.groupby(["Department", "Year", "Status"]).size().reset_index(name="Students") \
           .to_excel(w, index=False, sheet_name="Summary")
         ws = w.sheets["Report"]
@@ -112,14 +116,28 @@ with st.sidebar:
     server = st.text_input("Kobo server", secret("KOBO_SERVER", "https://kf.kobotoolbox.org"))
     uid = st.text_input("Form (asset) UID", secret("KOBO_ASSET_UID", "aqFb9MJU62tPZC2KaLgjfQ"))
     token = secret("KOBO_TOKEN") or st.text_input("API token", type="password")
-    if st.button("🔄 Refresh data"):
+    if st.button("🔄 Refresh now"):
         st.cache_data.clear()
+    auto = st.checkbox("Auto-refresh every 60 seconds", value=True)
+
+st.session_state["last_full_run"] = time.time()
+
+
+@st.fragment(run_every=60)
+def _auto_refresh():
+    if time.time() - st.session_state.get("last_full_run", 0) >= 55:
+        st.cache_data.clear()
+        st.rerun()
+
+
+if auto:
+    _auto_refresh()
 
 subs = None
 if token:
     try:
         subs = fetch_kobo(server, uid, token)
-        st.sidebar.success(f"Kobo connected: {len(subs)} submissions")
+        st.sidebar.success(f"🟢 Live: {len(subs)} submissions · updated {time.strftime('%H:%M:%S')}")
     except requests.HTTPError as e:
         st.sidebar.error(f"Kobo error {e.response.status_code}. Check token / server / UID.")
     except Exception as e:
@@ -137,7 +155,7 @@ df = df.sort_values(["Department", "Year", "Student"]).reset_index(drop=True)
 with st.sidebar:
     st.header("Filters")
     sel_dept = st.multiselect("Department", sorted(df["Department"].dropna().unique()),
-                              placeholder="All departments")
+                              placeholder="All departments (select one or many)")
     d = df[df["Department"].isin(sel_dept)] if sel_dept else df
     sel_year = st.multiselect("Year", sorted(d["Year"].unique(), reverse=True), placeholder="All years")
     d = d[d["Year"].isin(sel_year)] if sel_year else d
@@ -168,11 +186,13 @@ tab_data, tab_charts = st.tabs(["📄 Report (view & download)", "📈 Charts"])
 with tab_data:
     st.caption(f"Showing {len(view)} of {len(df)} records")
     st.dataframe(view, width="stretch", hide_index=True)
+    per_dept = st.checkbox("Excel: also add one sheet per department", value=len(sel_dept) > 1)
     b1, b2, _ = st.columns([1, 1, 4])
-    b1.download_button("⬇️ Download CSV", view.to_csv(index=False).encode("utf-8-sig"),
+    b1.download_button("⬇️ Download Excel", to_excel(view, per_dept), "student_report.xlsx",
+                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       type="primary")
+    b2.download_button("⬇️ Download CSV", view.to_csv(index=False).encode("utf-8-sig"),
                        "student_report.csv", "text/csv")
-    b2.download_button("⬇️ Download Excel", to_excel(view), "student_report.xlsx",
-                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 with tab_charts:
     a, b = st.columns(2)
