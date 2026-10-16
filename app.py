@@ -1,12 +1,18 @@
 import io
 import time
+from pathlib import Path
 import requests
 import pandas as pd
 import streamlit as st
 
 st.set_page_config(page_title="Student Project Dashboard", page_icon="📊", layout="wide")
 
-ROSTER_FILE = "data.xlsx"  # XLSForm: used for department / student / guide names
+# ---- Kobo settings (kept in code as requested) ----
+KOBO_TOKEN = "9c1986eed989fb1aa3c7872de07aa6d03aeb125f"
+KOBO_ASSET_UID = "aqFb9MJU62tPZC2KaLgjfQ"
+KOBO_SERVER = "https://kf.kobotoolbox.org"  # use https://eu.kobotoolbox.org for the EU server
+
+ROSTER_FILE = Path(__file__).parent / "data.xlsx"  # optional local copy of the XLSForm
 
 # Final column names -> question names in the Kobo form
 Q_COLS = {
@@ -30,10 +36,8 @@ def secret(name, default=""):
 
 
 # ---------------- Data loading ----------------
-@st.cache_data
-def load_roster(file):
-    xl = pd.ExcelFile(file)
-    ch = xl.parse("choices", dtype=str)
+def _roster_from_choices(ch):
+    ch = ch.astype(str).replace({"nan": None, "None": None})
     depts = ch[ch.list_name == "departments"][["name", "label"]]
     depts.columns = ["dept", "Department"]
     stu = ch[ch.list_name == "students"][["name", "label", "dept", "yr", "guide"]].copy()
@@ -45,6 +49,25 @@ def load_roster(file):
         sub = ch[ch.list_name == lst]
         labels[lst] = dict(zip(sub["name"], sub["label"]))
     return roster, labels
+
+
+@st.cache_data
+def load_roster_file(file):
+    return _roster_from_choices(pd.ExcelFile(file).parse("choices", dtype=str))
+
+
+@st.cache_data(ttl=3600, show_spinner="Reading form definition from Kobo…")
+def load_roster_kobo(server, uid, token):
+    """Read the choice lists (departments, students, guides) straight from the Kobo form."""
+    r = requests.get(f"{server.rstrip('/')}/api/v2/assets/{uid}/",
+                     headers={"Authorization": f"Token {token}"},
+                     params={"format": "json"}, timeout=60)
+    r.raise_for_status()
+    rows = r.json()["content"]["choices"]
+    ch = pd.DataFrame(rows)
+    if "label" in ch:  # label can be a list when the form has translations
+        ch["label"] = ch["label"].apply(lambda x: x[0] if isinstance(x, list) and x else x)
+    return _roster_from_choices(ch)
 
 
 @st.cache_data(ttl=60, show_spinner="Fetching data from KoboToolbox…")
@@ -109,13 +132,12 @@ def to_excel(df, per_dept=False):
 
 # ---------------- Sidebar: source ----------------
 st.title("📊 Student Project Dashboard")
-roster, labels = load_roster(ROSTER_FILE)
 
 with st.sidebar:
     st.header("Data source")
-    server = st.text_input("Kobo server", secret("KOBO_SERVER", "https://kf.kobotoolbox.org"))
-    uid = st.text_input("Form (asset) UID", secret("KOBO_ASSET_UID", "aqFb9MJU62tPZC2KaLgjfQ"))
-    token = secret("KOBO_TOKEN") or st.text_input("API token", type="password")
+    server = st.text_input("Kobo server", secret("KOBO_SERVER", KOBO_SERVER))
+    uid = st.text_input("Form (asset) UID", secret("KOBO_ASSET_UID", KOBO_ASSET_UID))
+    token = secret("KOBO_TOKEN") or KOBO_TOKEN
     if st.button("🔄 Refresh now"):
         st.cache_data.clear()
     auto = st.checkbox("Auto-refresh every 60 seconds", value=True)
@@ -132,6 +154,21 @@ def _auto_refresh():
 
 if auto:
     _auto_refresh()
+
+roster = labels = None
+if token:
+    try:
+        roster, labels = load_roster_kobo(server, uid, token)
+    except Exception:
+        roster = None
+if roster is None and ROSTER_FILE.exists():
+    roster, labels = load_roster_file(ROSTER_FILE)
+if roster is None:
+    up = st.file_uploader("Upload the form Excel (XLSForm) to load department/student names", type="xlsx")
+    if not up:
+        st.info("Add your Kobo API token in Secrets, or upload the form Excel file to continue.")
+        st.stop()
+    roster, labels = load_roster_file(up)
 
 subs = None
 if token:
