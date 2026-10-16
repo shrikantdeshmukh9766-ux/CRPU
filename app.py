@@ -7,7 +7,7 @@ import streamlit as st
 # ---- Kobo settings ----
 KOBO_TOKEN = "9c1986eed989fb1aa3c7872de07aa6d03aeb125f"
 KOBO_ASSET_UID = "aqFb9MJU62tPZC2KaLgjfQ"
-KOBO_SERVER = "https://kf.kobotoolbox.org"  # use https://eu.kobotoolbox.org for the EU server
+KOBO_SERVER = "https://eu.kobotoolbox.org"  # EU server
 
 HEADERS = {"Authorization": f"Token {KOBO_TOKEN}"}
 BASE = f"{KOBO_SERVER.rstrip('/')}/api/v2/assets/{KOBO_ASSET_UID}"
