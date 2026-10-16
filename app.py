@@ -27,7 +27,6 @@ st.set_page_config(page_title="Kobo Live Dashboard", page_icon="📊", layout="w
 
 
 # ---------------- Kobo API ----------------
-@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_choices():
     """Choice lists from the form (department / student / yes-no labels, guide)."""
     r = requests.get(BASE + "/", headers=HEADERS, params={"format": "json"}, timeout=60)
@@ -38,7 +37,6 @@ def fetch_choices():
     return ch
 
 
-@st.cache_data(ttl=60, show_spinner="Fetching data from KoboToolbox…")
 def fetch_submissions():
     url, params, rows = BASE + "/data/", {"format": "json", "limit": 1000}, []
     while url:
@@ -135,27 +133,24 @@ def column_filter(df, c):
 # ---------------- App ----------------
 st.title("📊 Kobo Live Dashboard")
 
+def load_from_kobo():
+    with st.spinner("Fetching data from KoboToolbox…"):
+        st.session_state["raw"] = fetch_submissions()
+        try:
+            st.session_state["choices"] = fetch_choices()
+        except Exception:
+            st.session_state["choices"] = None
+        st.session_state["loaded_at"] = time.strftime("%d %b %Y %H:%M:%S")
+
+
 with st.sidebar:
     st.header("Data")
-    if st.button("🔄 Refresh now"):
-        st.cache_data.clear()
-    auto = st.checkbox("Auto-refresh every 60 seconds", value=True)
+    refresh = st.button("🔄 Refresh from Kobo")
 
-st.session_state["last_full_run"] = time.time()
-
-
-@st.fragment(run_every=60)
-def _auto_refresh():
-    if time.time() - st.session_state.get("last_full_run", 0) >= 55:
-        st.cache_data.clear()
-        st.rerun()
-
-
-if auto:
-    _auto_refresh()
-
+# Kobo is called only when the page is opened (new session) or Refresh is pressed.
 try:
-    raw = fetch_submissions()
+    if "raw" not in st.session_state or refresh:
+        load_from_kobo()
 except requests.HTTPError as e:
     st.error(f"Kobo returned error {e.response.status_code}. Check the token, form ID and server in app.py.")
     st.stop()
@@ -163,17 +158,15 @@ except Exception as e:
     st.error(f"Could not reach KoboToolbox: {e}")
     st.stop()
 
+raw = st.session_state["raw"]
+choices = st.session_state["choices"]
+
 if raw.empty:
     st.info("No submissions found in this Kobo form yet.")
     st.stop()
 
-try:
-    choices = fetch_choices()
-except Exception:
-    choices = None
-
 df = prepare(raw, choices)
-st.sidebar.success(f"🟢 Live: {len(df)} submissions · updated {time.strftime('%H:%M:%S')}")
+st.sidebar.success(f"{len(df)} submissions · loaded {st.session_state['loaded_at']}")
 
 # ---- filters: every column ----
 with st.sidebar:
@@ -208,9 +201,13 @@ with tab_data:
     multi = "Department" in view and view["Department"].nunique() > 1
     per_dept = st.checkbox("Excel: also add one sheet per department", value=multi)
     b1, b2, _ = st.columns([1, 1, 4])
-    b1.download_button("⬇️ Download Excel", to_excel(view, per_dept), "kobo_report.xlsx",
-                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                       type="primary")
+    try:
+        b1.download_button("⬇️ Download Excel", to_excel(view, per_dept), "kobo_report.xlsx",
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           type="primary")
+    except ModuleNotFoundError:
+        b1.warning("Excel export needs `openpyxl`. Add a requirements.txt file (with openpyxl) "
+                   "to the root of your GitHub repo and reboot the app. CSV works meanwhile.")
     b2.download_button("⬇️ Download CSV", view.to_csv(index=False).encode("utf-8-sig"),
                        "kobo_report.csv", "text/csv")
 
